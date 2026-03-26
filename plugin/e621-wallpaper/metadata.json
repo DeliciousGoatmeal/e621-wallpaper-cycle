@@ -1,0 +1,15 @@
+{
+    "KPlugin": {
+        "Id": "e621-wallpaper",
+        "Name": "e621 Wallpaper",
+        "Description": "Live wallpaper from e621 — videos and images with blurred background fill",
+        "Version": "1.0",
+        "License": "MIT",
+        "Authors": [
+            { "Name": "zombiedoggie" }
+        ],
+        "Website": "https://github.com/DeliciousGoatmeal"
+    },
+    "KPackageStructure": "Plasma/Wallpaper",
+    "X-Plasma-ConfigFile": "main.xml"
+}

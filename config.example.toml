@@ -1,0 +1,17 @@
+user_agent = "e621-plasma-wallpaper/0.2 (by your-e621-username)"
+cache_dir = "~/.cache/e621-plasma-wallpaper"
+interval_seconds = 600
+fetch_limit = 30
+download_batch = 8
+max_cache_files = 300
+min_width = 1920
+min_height = 1080
+prefer_sample = false
+apply_mode = "all"
+
+# Keep this safe-only.
+tags = "rating:s order:random -type:webm -type:nswf"
+
+# Good wallpaper-oriented examples:
+# tags = "rating:s scenic landscape sky clouds night order:random -type:webm -type:swf"
+# tags = "rating:s wallpaper background solo order:random -type:webm -type:swf"

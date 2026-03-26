@@ -1,0 +1,15 @@
+[Unit]
+Description=e621 Plasma Wallpaper
+After=plasma-plasmashell.service graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/e621-wallpaper-cycle/target/release/e621-plasma-wallpaper
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=plasma-plasmashell.service
