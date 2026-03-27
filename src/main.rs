@@ -659,6 +659,30 @@ fn plasma_config_mtime() -> Option<SystemTime> {
     fs::metadata(plasma_config_path()).and_then(|m| m.modified()).ok()
 }
 
+/// Read a single value from the Plasma config, merging all matching e621-wallpaper General sections.
+/// Returns empty string if not found. Lightweight — stops scanning after the value is found.
+fn read_plasma_config_value(key: &str) -> String {
+    let path = plasma_config_path();
+    let Ok(contents) = fs::read_to_string(&path) else { return String::new() };
+    let target_suffix = "][Wallpaper][e621-wallpaper][General]";
+    let mut in_section = false;
+    let mut result = String::new();
+    for line in contents.lines() {
+        if line.starts_with('[') {
+            in_section = line.contains(target_suffix);
+            continue;
+        }
+        if !in_section { continue; }
+        if let Some((k, v)) = line.split_once('=') {
+            if k.trim() == key {
+                let val = v.trim().to_string();
+                if !val.is_empty() { result = val; }
+            }
+        }
+    }
+    result
+}
+
 /// Push visual config values to the QML plugin via qdbus so the blur/dim
 /// settings from System Settings take effect immediately.
 fn push_visual_config(screen_index: usize, blur_radius: f32, blur_mult: f32, bg_dim: f32) {
@@ -869,11 +893,38 @@ fn main() -> Result<()> {
     let mut fetch_cursor: Vec<DownloadCandidate> = Vec::new();
     let mut ticks_since_download = download_every;   // trigger a download on first tick
 
-    // Track Plasma config mtime for hot-reload
+    // Track Plasma config mtime for hot-reload and ForceNextAt separately
     let mut last_config_mtime = plasma_config_mtime();
+    let mut last_force_next_at = config.force_next_at.clone();
 
     loop {
         thread::sleep(tick);
+
+        // ── Check ForceNextAt every tick (independent of mtime) ───────────────
+        // writeConfig() in the config dialog writes directly to KConfig on disk.
+        // We poll every tick so the skip button is always responsive.
+        let current_force_next = read_plasma_config_value("ForceNextAt");
+        if current_force_next != last_force_next_at && !current_force_next.is_empty() {
+            last_force_next_at = current_force_next;
+            log_info("Force next triggered from System Settings");
+            for (i, target) in targets.iter().enumerate() {
+                let last = last_shown[i].as_ref();
+                if let Some(path) = pick_next(&cache_dir, config.video_only, last) {
+                    if path.exists() {
+                        write_current_file(&cache_dir, i, &target.name, &path);
+                        screen_durations[i] = if is_video_path(&path) {
+                            ffprobe_duration(&path)
+                                .map(|d| Duration::from_secs_f64(d))
+                                .unwrap_or(Duration::from_secs(config.image_duration))
+                        } else {
+                            Duration::from_secs(config.image_duration)
+                        };
+                        last_shown[i] = Some(path);
+                        screen_timers[i] = std::time::Instant::now();
+                    }
+                }
+            }
+        }
 
         // ── Hot-reload config when System Settings changes it ─────────────────
         let current_mtime = plasma_config_mtime();
@@ -881,30 +932,7 @@ fn main() -> Result<()> {
             let new_config = AppConfig::load_from_plasma();
             last_config_mtime = current_mtime;
 
-            // Check if "Force Next" button was pressed
-            if new_config.force_next_at != config.force_next_at
-                && !new_config.force_next_at.is_empty() {
-                log_info("Force next triggered from System Settings");
-                for (i, target) in targets.iter().enumerate() {
-                    let last = last_shown[i].as_ref();
-                    if let Some(path) = pick_next(&cache_dir, new_config.video_only, last) {
-                        if path.exists() {
-                            write_current_file(&cache_dir, i, &target.name, &path);
-                            screen_durations[i] = if is_video_path(&path) {
-                                ffprobe_duration(&path)
-                                    .map(|d| Duration::from_secs_f64(d))
-                                    .unwrap_or(Duration::from_secs(new_config.image_duration))
-                            } else {
-                                Duration::from_secs(new_config.image_duration)
-                            };
-                            last_shown[i] = Some(path);
-                            screen_timers[i] = std::time::Instant::now();
-                        }
-                    }
-                }
-            }
-
-            // Reload settings if anything else changed
+            // Reload settings if anything changed
             if new_config.tags != config.tags
                 || new_config.video_only != config.video_only
                 || new_config.image_duration != config.image_duration

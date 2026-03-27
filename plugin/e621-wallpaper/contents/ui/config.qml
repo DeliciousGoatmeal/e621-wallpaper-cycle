@@ -304,12 +304,13 @@ ColumnLayout {
 
     QQC2.Button {
         text: "Skip to Next"
-        // Write directly to KConfig so the daemon picks it up immediately
-        // without requiring the user to click Apply.
+        // writeConfig writes directly to the KConfig file on disk so the Rust
+        // daemon picks it up on its next tick without requiring Apply.
         onClicked: {
             var ts = new Date().toISOString()
             cfg_ForceNextAt = ts
-            writeNow("ForceNextAt", ts)
+            if (wallpaperConfiguration)
+                wallpaperConfiguration.writeConfig("ForceNextAt", ts)
         }
     }
 

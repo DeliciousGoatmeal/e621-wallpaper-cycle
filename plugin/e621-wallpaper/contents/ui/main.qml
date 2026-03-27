@@ -54,6 +54,7 @@ WallpaperItem {
     AudioOutput {
         id: fgAudioOut
         volume: 1.0
+        muted: !root.isAudioEnabled
         device: MediaDevices.defaultAudioOutput   // honour system default (HDMI, etc.)
     }
 
@@ -227,8 +228,7 @@ WallpaperItem {
                     MediaPlayer {
                         id: fgPlayer
                         loops: MediaPlayer.Infinite
-                        audioOutput: root.isAudioEnabled ? fgAudioOut : null
-                        onActiveTracksChanged: { if (!root.isAudioEnabled) activeAudioTracks = [] }
+                        audioOutput: fgAudioOut
                         videoOutput: fgVideo
                         onPlaybackStateChanged: {
                             if (playbackState === MediaPlayer.PlayingState) {
