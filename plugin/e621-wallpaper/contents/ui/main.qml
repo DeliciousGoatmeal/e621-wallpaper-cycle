@@ -75,7 +75,6 @@ WallpaperItem {
     AudioOutput {
         id: fgAudioOut
         volume: root.isAudioEnabled ? 1.0 : 0.0
-        device: MediaDevices.defaultAudioOutput   // honour system default (HDMI, etc.)
     }
 
     function dbg(msg) {

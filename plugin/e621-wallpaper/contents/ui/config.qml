@@ -6,11 +6,12 @@ ColumnLayout {
     id: root
     spacing: 16
 
-    // Plasma 6 injects these two properties into the config page root item.
+    // Plasma 6 injects these properties into the config page root item.
     // Declaring them here allows the injection to succeed and gives us access
     // to writeConfig() for immediate (no-Apply) live writes.
     property var configDialog
     property var wallpaperConfiguration
+    property var screen
 
     // Plasma auto-binds cfg_* properties to KConfig XT entries in main.xml.
     // For live preview (no Apply needed), visual sliders write directly via
@@ -60,18 +61,6 @@ ColumnLayout {
 
     Component.onCompleted: Qt.callLater(fetchNowPlaying)
     onCfg_PostIdChanged: Qt.callLater(fetchNowPlaying)
-
-    // Pick up live updates written by the Rust daemon via qdbus while the
-    // dialog is open — cfg_* properties are set once on load and don't
-    // auto-update from external KConfig writes.
-    Connections {
-        target: wallpaperConfiguration
-        function onValueChanged(key, value) {
-            if      (key === "PostId")     { cfg_PostId     = parseInt(value, 10) || 0 }
-            else if (key === "PostArtist") { cfg_PostArtist = value || "" }
-            else if (key === "PostUrl")    { cfg_PostUrl    = value || "" }
-        }
-    }
 
     // Write a config key immediately.
     // wallpaperConfiguration[key] = value goes through QQmlPropertyMap which
@@ -282,37 +271,43 @@ ColumnLayout {
 
     QQC2.Label { text: "Audio"; font.bold: true }
 
-    RowLayout {
-        spacing: 12
-        QQC2.Label { text: "Play audio from:" }
-        QQC2.ComboBox {
-            // Build model: "None" + connector name for each detected screen.
-            // Store the screen name (not an index) so matching is unambiguous.
-            id: audioCombo
-            model: {
-                var items = ["None"]
-                for (var i = 0; i < Qt.application.screens.length; i++)
-                    items.push(Qt.application.screens[i].name)
-                return items
+    QQC2.Label { text: "Play audio from:" }
+
+    QQC2.Slider {
+        id: audioSlider
+        Layout.fillWidth: true
+        from: 0
+        to: Math.max(1, Qt.application.screens.length)
+        stepSize: 1
+        value: {
+            if (cfg_AudioScreen === "") return 0
+            for (var i = 0; i < Qt.application.screens.length; i++) {
+                if (Qt.application.screens[i].name === cfg_AudioScreen)
+                    return i + 1
             }
-            currentIndex: {
-                if (cfg_AudioScreen === "") return 0
-                for (var i = 0; i < Qt.application.screens.length; i++) {
-                    if (Qt.application.screens[i].name === cfg_AudioScreen)
-                        return i + 1
-                }
-                return 0
-            }
-            onActivated: {
-                var name = currentIndex === 0 ? "" : Qt.application.screens[currentIndex - 1].name
-                cfg_AudioScreen = name
-                // writeNow triggers onValueChanged in main.qml on this containment immediately.
-                // writeConfig writes to KConfig on disk so the Rust daemon picks it up and
-                // propagates the change to the OTHER monitor's containment as well.
-                writeNow("AudioScreen", name)
-                if (wallpaperConfiguration)
-                    wallpaperConfiguration.writeConfig("AudioScreen", name)
-            }
+            return 0
+        }
+        onMoved: {
+            var v = Math.round(value)
+            var name = v === 0 ? "" : Qt.application.screens[v - 1].name
+            cfg_AudioScreen = name
+            writeNow("AudioScreen", name)
+            if (wallpaperConfiguration)
+                wallpaperConfiguration.writeConfig("AudioScreen", name)
+        }
+    }
+
+    QQC2.Label {
+        Layout.fillWidth: true
+        horizontalAlignment: Text.AlignHCenter
+        font.pixelSize: 10
+        color: "#e0e0ff"
+        text: {
+            var v = Math.round(audioSlider.value)
+            if (v === 0) return "None"
+            if (v - 1 < Qt.application.screens.length)
+                return Qt.application.screens[v - 1].name
+            return ""
         }
     }
 
