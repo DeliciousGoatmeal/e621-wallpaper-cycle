@@ -11,6 +11,8 @@
     <entry name="BlurRadius"      type="Double">  <default>64</default>     </entry>
     <entry name="BlurMultiplier"  type="Double">  <default>2.0</default>    </entry>
     <entry name="BackgroundDim"   type="Double">  <default>0.3</default>    </entry>
+    <entry name="FgBlurRadius"    type="Int">     <default>0</default>      </entry>
+    <entry name="RgbOffset"       type="Int">     <default>0</default>      </entry>
     <entry name="ForceNextAt"      type="String">  <default></default>       </entry>
   </group>
 </kcfg>

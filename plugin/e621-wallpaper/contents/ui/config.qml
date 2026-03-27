@@ -1,221 +1,167 @@
 import QtQuick
-import QtMultimedia
-import QtQuick.Effects
-import org.kde.plasma.plasmoid
+import QtQuick.Controls as QQC2
+import QtQuick.Layouts
 
-WallpaperItem {
+ColumnLayout {
     id: root
+    spacing: 16
 
-    // Config values — set via System Settings or qdbus writeConfig
-    property string mediaPath:          wallpaper.configuration.MediaPath       || ""
-    property real   blurRadius:         wallpaper.configuration.BlurRadius      || 64
-    property real   blurMultiplier:     wallpaper.configuration.BlurMultiplier  || 2.0
-    property real   backgroundDim:      wallpaper.configuration.BackgroundDim   || 0.3
+    // Plasma 6 injects these two properties into the config page root item.
+    // Declaring them here allows the injection to succeed and gives us access
+    // to writeConfig() for immediate (no-Apply) live writes.
+    property var configDialog
+    property var wallpaperConfiguration
 
-    property bool   isVideo:     false  // set explicitly in applyMedia
-    property bool   mediaLoaded: false
-    property bool   showDebug:   !mediaLoaded
-    property string debugLog:    ""
+    // Plasma auto-binds cfg_* properties to KConfig XT entries in main.xml.
+    // For live preview (no Apply needed), visual sliders write directly via
+    // wallpaperConfiguration.writeConfig() in their onMoved handlers.
+    property string cfg_Tags
+    property int    cfg_ImageDuration
+    property int    cfg_DownloadBatch
+    property int    cfg_FetchLimit
+    property bool   cfg_VideoOnly
+    property real   cfg_BlurRadius
+    property real   cfg_BlurMultiplier
+    property real   cfg_BackgroundDim
+    property int    cfg_FgBlurRadius
+    property int    cfg_RgbOffset
+    property string cfg_ForceNextAt
 
-    function dbg(msg) {
-        debugLog = "[" + new Date().toLocaleTimeString() + "] " + msg + "\n" + debugLog
-        console.log("[e621-wallpaper] " + msg)
+    // Write a config key immediately to KConfig (bypasses the cfg_ Apply buffer).
+    function writeNow(key, value) {
+        if (wallpaperConfiguration)
+            wallpaperConfiguration.writeConfig(key, value)
     }
 
-    Component.onCompleted: {
-        dbg("Screen " + screenIdx)
-        dbg("MediaPath: '" + root.mediaPath + "'")
-    }
+    // ── Search ────────────────────────────────────────────────────────────────
 
-    Connections {
-        target: wallpaper.configuration
-        function onValueChanged(key, value) { root.dbg(key + " = " + value) }
-    }
+    GridLayout {
+        columns: 2
+        columnSpacing: 12
+        rowSpacing: 8
+        Layout.fillWidth: true
 
-    onMediaPathChanged: {
-        if (mediaPath === "") return
-        // Crossfade: fade out, swap media, fade back in
-        fadeOut.start()
-    }
-
-    function applyMedia() {
-        var url = "file://" + mediaPath
-        var vid = mediaPath.endsWith(".webm") || mediaPath.endsWith(".mp4")
-        root.isVideo = vid
-        dbg((vid ? "video" : "image") + ": " + mediaPath)
-        if (vid) {
-            bgImage.source = ""
-            fgImage.source = ""
-            bgPlayer.source = url
-            fgPlayer.source = url
-            bgPlayer.play()
-            fgPlayer.play()
-        } else {
-            bgPlayer.stop(); bgPlayer.source = ""
-            fgPlayer.stop(); fgPlayer.source = ""
-            bgImage.source = url
-            fgImage.source = url
-        }
-        fadeIn.start()
-    }
-
-    // Fade out → swap → fade in
-    SequentialAnimation {
-        id: fadeOut
-        NumberAnimation { target: fgContainer; property: "opacity"; to: 0.0; duration: 600; easing.type: Easing.InQuad }
-        ScriptAction { script: root.applyMedia() }
-    }
-    NumberAnimation {
-        id: fadeIn
-        target: fgContainer; property: "opacity"; to: 1.0; duration: 600; easing.type: Easing.OutQuad
-    }
-
-    readonly property int screenIdx: {
-        try { return wallpaper.containment.screen } catch(e) { return 0 }
-    }
-
-    // ── Background source ─────────────────────────────────────────────────────
-    // Item is opacity:0 not visible:false — MultiEffect needs it in the render tree
-
-    Item {
-        id: bgSourceItem
-        anchors.fill: parent
-        opacity: 0
-        layer.enabled: true
-
-        VideoOutput {
-            id: bgVideo
-            anchors.fill: parent
-            fillMode: VideoOutput.PreserveAspectCrop
-            visible: root.isVideo
-            MediaPlayer {
-                id: bgPlayer
-                loops: MediaPlayer.Infinite
-                audioOutput: null
-                // Prevent FFmpeg from decoding audio (stops Opus error spam)
-                onActiveTracksChanged: { activeAudioTracks = [] }
-                videoOutput: bgVideo
-                onErrorOccurred: function(err, msg) { root.dbg("bgPlayer: " + msg) }
-            }
+        QQC2.Label { text: "Tags:" }
+        QQC2.TextField {
+            Layout.fillWidth: true
+            text: cfg_Tags
+            placeholderText: "e.g. rating:e gay male -female"
+            onTextEdited: cfg_Tags = text
         }
 
-        Image {
-            id: bgImage
-            anchors.fill: parent
-            fillMode: Image.PreserveAspectCrop
-            visible: !root.isVideo
-            cache: false
-            asynchronous: true
+        QQC2.Label { text: "Image duration (s):" }
+        QQC2.SpinBox {
+            from: 5; to: 3600; stepSize: 5
+            value: cfg_ImageDuration
+            onValueModified: cfg_ImageDuration = value
+        }
+
+        QQC2.Label { text: "Download batch:" }
+        QQC2.SpinBox {
+            from: 1; to: 50
+            value: cfg_DownloadBatch
+            onValueModified: cfg_DownloadBatch = value
+        }
+
+        QQC2.Label { text: "Fetch limit:" }
+        QQC2.SpinBox {
+            from: 1; to: 320
+            value: cfg_FetchLimit
+            onValueModified: cfg_FetchLimit = value
+        }
+
+        QQC2.Label { text: "Videos only:" }
+        QQC2.CheckBox {
+            checked: cfg_VideoOnly
+            onToggled: cfg_VideoOnly = checked
         }
     }
 
-    // Blur + darken background using MultiEffect (no .qsb needed)
-    MultiEffect {
-        source: bgSourceItem
-        anchors.fill: parent
-        blurEnabled: true
-        blur: 1.0
-        blurMax: root.blurRadius
-        blurMultiplier: root.blurMultiplier
-        brightness: -root.backgroundDim
-    }
+    QQC2.MenuSeparator { Layout.fillWidth: true }
 
-    // ── Foreground: fitted, centered (wrapped for crossfade opacity) ──────────
+    // ── Visuals (live preview — no Apply needed) ──────────────────────────────
 
-    Item {
-        id: fgContainer
-        anchors.fill: parent
+    QQC2.Label { text: "Visuals"; font.bold: true }
 
-        VideoOutput {
-            id: fgVideo
-            anchors.centerIn: parent
-            visible: root.isVideo && root.mediaPath !== ""
-            fillMode: VideoOutput.PreserveAspectFit
-            width: {
-                if (implicitWidth <= 0 || implicitHeight <= 0) return parent.width
-                var s = Math.min(parent.width / implicitWidth, parent.height / implicitHeight)
-                return implicitWidth * s
+    GridLayout {
+        columns: 2
+        columnSpacing: 12
+        rowSpacing: 8
+        Layout.fillWidth: true
+
+        QQC2.Label { text: "Blur radius:" }
+        RowLayout {
+            QQC2.Slider {
+                id: blurRadiusSlider
+                from: 0; to: 128; stepSize: 1
+                value: cfg_BlurRadius
+                onMoved: { cfg_BlurRadius = value; writeNow("BlurRadius", value) }
+                Layout.preferredWidth: 180
             }
-            height: {
-                if (implicitWidth <= 0 || implicitHeight <= 0) return parent.height
-                var s = Math.min(parent.width / implicitWidth, parent.height / implicitHeight)
-                return implicitHeight * s
-            }
-            MediaPlayer {
-                id: fgPlayer
-                loops: MediaPlayer.Infinite
-                audioOutput: null
-                onActiveTracksChanged: { activeAudioTracks = [] }
-                videoOutput: fgVideo
-                onPlaybackStateChanged: {
-                    if (playbackState === MediaPlayer.PlayingState) {
-                        root.mediaLoaded = true
-                        root.dbg("Video playing")
-                    }
-                }
-                onErrorOccurred: function(err, msg) { root.dbg("fgPlayer: " + msg) }
-            }
+            QQC2.Label { text: Math.round(blurRadiusSlider.value) }
         }
 
-        Image {
-            id: fgImage
-            anchors.centerIn: parent
-            visible: !root.isVideo && root.mediaPath !== ""
-            fillMode: Image.PreserveAspectFit
-            width: parent.width
-            height: parent.height
-            cache: false
-            asynchronous: true
-            onStatusChanged: {
-                if (status === Image.Ready) {
-                    root.mediaLoaded = true
-                    root.dbg("Image ready")
-                } else if (status === Image.Error) {
-                    root.dbg("Image error: " + source)
-                }
+        QQC2.Label { text: "Blur multiplier:" }
+        RowLayout {
+            QQC2.Slider {
+                id: blurMultSlider
+                from: 0.5; to: 4.0; stepSize: 0.1
+                value: cfg_BlurMultiplier
+                onMoved: { cfg_BlurMultiplier = value; writeNow("BlurMultiplier", value) }
+                Layout.preferredWidth: 180
             }
+            QQC2.Label { text: blurMultSlider.value.toFixed(1) }
         }
-    } // end fgContainer
 
-    Rectangle {
-        anchors.fill: parent
-        color: "#111118"
-        visible: root.mediaPath === ""
-        z: -1
-    }
-
-    // ── Debug overlay ─────────────────────────────────────────────────────────
-
-    Rectangle {
-        anchors.left: parent.left
-        anchors.top: parent.top
-        anchors.margins: 24
-        width: 600
-        height: col.implicitHeight + 24
-        color: "#dd000000"
-        radius: 8
-        opacity: root.showDebug ? 1.0 : 0.0
-        visible: opacity > 0
-        z: 100
-        Behavior on opacity { NumberAnimation { duration: 1000 } }
-        Column {
-            id: col
-            anchors { fill: parent; margins: 12 }
-            spacing: 6
-            Text { text: "e621 Wallpaper"; color: "#fff"; font.bold: true; font.pixelSize: 15 }
-            Text { text: "Screen: " + root.screenIdx; color: "#aaa"; font.pixelSize: 12 }
-            Text {
-                text: "MediaPath: " + (root.mediaPath || "(none — run the Rust binary)")
-                color: root.mediaPath ? "#88ff88" : "#ffcc44"
-                font.pixelSize: 11
-            wrapMode: Text.Wrap
-            width: parent.width
+        QQC2.Label { text: "Background dim:" }
+        RowLayout {
+            QQC2.Slider {
+                id: bgDimSlider
+                from: 0.0; to: 1.0; stepSize: 0.05
+                value: cfg_BackgroundDim
+                onMoved: { cfg_BackgroundDim = value; writeNow("BackgroundDim", value) }
+                Layout.preferredWidth: 180
             }
-            Rectangle { width: parent.width; height: 1; color: "#333" }
-            Text {
-                text: root.debugLog; color: "#ccc"; font.pixelSize: 11
-                font.family: "monospace"; wrapMode: Text.Wrap; width: parent.width
+            QQC2.Label { text: bgDimSlider.value.toFixed(2) }
+        }
+
+        QQC2.Label { text: "Video blur:" }
+        RowLayout {
+            QQC2.Slider {
+                id: fgBlurSlider
+                from: 0; to: 128; stepSize: 1
+                value: cfg_FgBlurRadius
+                onMoved: { cfg_FgBlurRadius = value; writeNow("FgBlurRadius", value) }
+                Layout.preferredWidth: 180
             }
+            QQC2.Label { text: fgBlurSlider.value > 0 ? Math.round(fgBlurSlider.value) : "off" }
+        }
+
+        QQC2.Label { text: "RGB offset (px):" }
+        RowLayout {
+            QQC2.Slider {
+                id: rgbSlider
+                from: 0; to: 50; stepSize: 1
+                value: cfg_RgbOffset
+                onMoved: { cfg_RgbOffset = value; writeNow("RgbOffset", value) }
+                Layout.preferredWidth: 180
+            }
+            QQC2.Label { text: rgbSlider.value > 0 ? rgbSlider.value + "px" : "off" }
         }
     }
+
+    QQC2.MenuSeparator { Layout.fillWidth: true }
+
+    QQC2.Button {
+        text: "Skip to Next"
+        // Write directly to KConfig so the daemon picks it up immediately
+        // without requiring the user to click Apply.
+        onClicked: {
+            var ts = new Date().toISOString()
+            cfg_ForceNextAt = ts
+            writeNow("ForceNextAt", ts)
+        }
+    }
+
+    Item { Layout.fillHeight: true }
 }

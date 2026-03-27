@@ -15,11 +15,14 @@ echo ""
 rm -rf "$DEST"
 mkdir -p "$DEST/contents/ui"
 mkdir -p "$DEST/contents/config"
+mkdir -p "$DEST/contents/shaders"
 
-cp "$SRC/metadata.json"                "$DEST/metadata.json"
-cp "$SRC/contents/ui/main.qml"         "$DEST/contents/ui/main.qml"
-cp "$SRC/contents/ui/config.qml"       "$DEST/contents/ui/config.qml"
-cp "$SRC/contents/config/main.xml"     "$DEST/contents/config/main.xml"
+cp "$SRC/metadata.json"                             "$DEST/metadata.json"
+cp "$SRC/contents/ui/main.qml"                      "$DEST/contents/ui/main.qml"
+cp "$SRC/contents/ui/config.qml"                    "$DEST/contents/ui/config.qml"
+cp "$SRC/contents/config/main.xml"                  "$DEST/contents/config/main.xml"
+cp "$SRC/contents/shaders/chromab.vert.qsb"         "$DEST/contents/shaders/chromab.vert.qsb"
+cp "$SRC/contents/shaders/chromab.frag.qsb"         "$DEST/contents/shaders/chromab.frag.qsb"
 
 echo "Plugin installed:"
 find "$DEST" -type f | sort

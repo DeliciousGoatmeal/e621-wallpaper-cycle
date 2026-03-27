@@ -165,6 +165,21 @@ fn is_image_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns the duration of a video file in seconds via ffprobe, or None on failure.
+fn ffprobe_duration(path: &Path) -> Option<f64> {
+    #[derive(Deserialize)]
+    struct Fmt { duration: Option<String> }
+    #[derive(Deserialize)]
+    struct Out { format: Fmt }
+
+    let raw = Command::new("ffprobe")
+        .args(["-v", "quiet", "-print_format", "json", "-show_format",
+               path.to_str().unwrap_or("")])
+        .output().ok()?;
+    let parsed: Out = serde_json::from_slice(&raw.stdout).ok()?;
+    parsed.format.duration?.parse::<f64>().ok()
+}
+
 fn expand_tilde(input: &str) -> Result<PathBuf> {
     if let Some(rest) = input.strip_prefix("~/") {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("could not resolve home dir"))?;
@@ -628,6 +643,10 @@ fn main() -> Result<()> {
         push_visual_config(i, blur_radius, blur_mult, bg_dim);
     }
 
+    let mut rng = rand::thread_rng();
+    let mut screen_durations: Vec<Duration> = vec![Duration::from_secs(config.image_duration); targets.len()];
+    let mut screen_timers: Vec<std::time::Instant> = vec![std::time::Instant::now(); targets.len()];
+
     log_info("fetching initial batch...");
     match fetch_candidates(&client, &config, config.video_only) {
         Ok(candidates) => {
@@ -646,6 +665,12 @@ fn main() -> Result<()> {
                                     write_current_file(&cache_dir, i, &target.name, &path);
                                     last_shown[i] = Some(path.clone());
                                     first_shown[i] = true;
+                                    if is_video_path(&path) {
+                                        if let Some(dur) = ffprobe_duration(&path) {
+                                            log_info(&format!("screen{i} initial video duration: {dur:.1}s"));
+                                            screen_durations[i] = Duration::from_secs_f64(dur);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -655,27 +680,34 @@ fn main() -> Result<()> {
                 thread::sleep(Duration::from_millis(500));
             }
             log_info(&format!("initial batch: {downloaded} files"));
+
+        // Stagger screen timers so monitors rotate independently of each other
+        for i in 0..targets.len() {
+            if first_shown[i] {
+                let max_offset = screen_durations[i].as_secs().saturating_sub(5);
+                if max_offset > 0 {
+                    let offset = rng.gen_range(0..max_offset);
+                    screen_timers[i] = std::time::Instant::now() - Duration::from_secs(offset);
+                }
+            }
+        }
         }
         Err(e) => log_warn(&format!("initial fetch failed: {e}")),
     }
 
-    let mut rng = rand::thread_rng();
-    let base_secs: u64 = 10;
-    let jitter_secs: u64 = 5;
-    let played_age       = Duration::from_secs(600); // 10 min — generous to avoid pruning before QML loads
+    let tick              = Duration::from_secs(2);  // config + rotation check interval
+    let download_every   = 8u32;                     // download every N ticks (~16s)
+    let played_age       = Duration::from_secs(600);
     let prune_interval   = Duration::from_secs(120);
     let mut last_prune   = std::time::Instant::now();
     let mut fetch_cursor: Vec<DownloadCandidate> = Vec::new();
-    let mut screen_timers: Vec<std::time::Instant> = vec![std::time::Instant::now(); targets.len()];
+    let mut ticks_since_download = download_every;   // trigger a download on first tick
 
     // Track Plasma config mtime for hot-reload
     let mut last_config_mtime = plasma_config_mtime();
 
     loop {
-        let sleep = base_secs
-            .saturating_add(rng.gen_range(0..=(jitter_secs * 2)))
-            .saturating_sub(jitter_secs);
-        thread::sleep(Duration::from_secs(sleep));
+        thread::sleep(tick);
 
         // ── Hot-reload config when System Settings changes it ─────────────────
         let current_mtime = plasma_config_mtime();
@@ -692,6 +724,13 @@ fn main() -> Result<()> {
                     if let Some(path) = pick_next(&cache_dir, new_config.video_only, last) {
                         if path.exists() {
                             write_current_file(&cache_dir, i, &target.name, &path);
+                            screen_durations[i] = if is_video_path(&path) {
+                                ffprobe_duration(&path)
+                                    .map(|d| Duration::from_secs_f64(d))
+                                    .unwrap_or(Duration::from_secs(new_config.image_duration))
+                            } else {
+                                Duration::from_secs(new_config.image_duration)
+                            };
                             last_shown[i] = Some(path);
                             screen_timers[i] = std::time::Instant::now();
                         }
@@ -718,11 +757,18 @@ fn main() -> Result<()> {
 
         // ── Rotate screens ────────────────────────────────────────────────────
         for (i, target) in targets.iter().enumerate() {
-            if screen_timers[i].elapsed() >= Duration::from_secs(config.image_duration) {
+            if screen_timers[i].elapsed() >= screen_durations[i] {
                 let last = last_shown[i].as_ref();
                 if let Some(path) = pick_next(&cache_dir, config.video_only, last) {
                     if path.exists() {
                         write_current_file(&cache_dir, i, &target.name, &path);
+                        screen_durations[i] = if is_video_path(&path) {
+                            ffprobe_duration(&path)
+                                .map(|d| { log_info(&format!("screen{i} video {d:.1}s")); Duration::from_secs_f64(d) })
+                                .unwrap_or(Duration::from_secs(config.image_duration))
+                        } else {
+                            Duration::from_secs(config.image_duration)
+                        };
                         last_shown[i] = Some(path);
                     } else {
                         log_warn(&format!("picked file vanished: {}", path.display()));
@@ -739,22 +785,26 @@ fn main() -> Result<()> {
             last_prune = std::time::Instant::now();
         }
 
-        // ── Download one file ─────────────────────────────────────────────────
-        if fetch_cursor.is_empty() {
-            match fetch_candidates(&client, &config, config.video_only) {
-                Ok(mut candidates) => {
-                    candidates.shuffle(&mut rng);
-                    fetch_cursor = candidates;
-                    log_info(&format!("refilled cursor: {} candidates", fetch_cursor.len()));
+        // ── Download one file (every N ticks) ────────────────────────────────
+        ticks_since_download += 1;
+        if ticks_since_download >= download_every {
+            ticks_since_download = 0;
+            if fetch_cursor.is_empty() {
+                match fetch_candidates(&client, &config, config.video_only) {
+                    Ok(mut candidates) => {
+                        candidates.shuffle(&mut rng);
+                        fetch_cursor = candidates;
+                        log_info(&format!("refilled cursor: {} candidates", fetch_cursor.len()));
+                    }
+                    Err(e) => { log_warn(&format!("fetch failed: {e}")); continue; }
                 }
-                Err(e) => { log_warn(&format!("fetch failed: {e}")); continue; }
             }
-        }
 
-        if let Some(candidate) = fetch_cursor.pop() {
-            match download_file(&client, &candidate, &cache_dir) {
-                Ok(path) => log_info(&format!("downloaded {}", path.display())),
-                Err(e)   => log_warn(&format!("download failed: {e}")),
+            if let Some(candidate) = fetch_cursor.pop() {
+                match download_file(&client, &candidate, &cache_dir) {
+                    Ok(path) => log_info(&format!("downloaded {}", path.display())),
+                    Err(e)   => log_warn(&format!("download failed: {e}")),
+                }
             }
         }
     }
