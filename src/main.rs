@@ -34,6 +34,7 @@ struct AppConfig {
     blur_multiplier: f32,
     background_dim: f32,
     force_next_at: String,
+    audio_screen: i64,   // -1 = none, 0..N = screen index that plays audio
 }
 
 impl AppConfig {
@@ -57,6 +58,7 @@ impl AppConfig {
             blur_multiplier: r("BlurMultiplier", "2.0").parse().unwrap_or(2.0),
             background_dim:  r("BackgroundDim",  "0.3").parse().unwrap_or(0.3),
             force_next_at:   r("ForceNextAt",    ""),
+            audio_screen:    r("AudioScreen",    "-1").parse().unwrap_or(-1),
         }
     }
 }
@@ -85,12 +87,25 @@ struct Post {
     rating: String,
     file: FileData,
     sample: SampleData,
+    tags: PostTags,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PostTags {
+    #[serde(default)]
+    artist: Vec<String>,
+    #[serde(default)]
+    general: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct FileData {
     url: Option<String>,
     ext: Option<String>,
+    #[serde(default)]
+    md5: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +119,18 @@ struct SampleData {
 struct DownloadCandidate {
     post_id: u64,
     url: String,
+    artists: Vec<String>,
+    description: String,
+    md5: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PostMeta {
+    post_id: u64,
+    artists: Vec<String>,
+    description: String,
+    post_url: String,
+    md5: String,
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +154,11 @@ struct KScreenOutput {
     scale: Option<f32>,
     current_mode_id: Option<String>,
     modes: Option<Vec<KScreenMode>>,
+    pos: Option<KScreenPos>,
 }
+
+#[derive(Debug, Deserialize, Default)]
+struct KScreenPos { x: i32, y: i32 }
 
 #[derive(Debug, Deserialize)]
 struct KScreenMode {
@@ -165,19 +196,60 @@ fn is_image_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Returns the duration of a video file in seconds via ffprobe, or None on failure.
-fn ffprobe_duration(path: &Path) -> Option<f64> {
+/// ffprobe output — duration plus any embedded metadata tags.
+#[derive(Debug, Default)]
+struct FfprobeInfo {
+    duration: Option<f64>,
+    title:    Option<String>,
+    artist:   Option<String>,
+    comment:  Option<String>,
+}
+
+fn ffprobe_info(path: &Path) -> FfprobeInfo {
+    #[derive(Deserialize, Default)]
+    struct Tags {
+        title:   Option<String>,
+        artist:  Option<String>,
+        comment: Option<String>,
+        // some encoders use TITLE / ARTIST (uppercase)
+        #[serde(rename = "TITLE")]   title_upper:   Option<String>,
+        #[serde(rename = "ARTIST")]  artist_upper:  Option<String>,
+        #[serde(rename = "COMMENT")] comment_upper: Option<String>,
+    }
     #[derive(Deserialize)]
-    struct Fmt { duration: Option<String> }
+    struct Fmt {
+        duration: Option<String>,
+        #[serde(default)]
+        tags: Tags,
+    }
     #[derive(Deserialize)]
     struct Out { format: Fmt }
 
-    let raw = Command::new("ffprobe")
+    let raw = match Command::new("ffprobe")
         .args(["-v", "quiet", "-print_format", "json", "-show_format",
                path.to_str().unwrap_or("")])
-        .output().ok()?;
-    let parsed: Out = serde_json::from_slice(&raw.stdout).ok()?;
-    parsed.format.duration?.parse::<f64>().ok()
+        .output() {
+        Ok(r) => r,
+        Err(_) => return FfprobeInfo::default(),
+    };
+
+    let parsed: Out = match serde_json::from_slice(&raw.stdout) {
+        Ok(p) => p,
+        Err(_) => return FfprobeInfo::default(),
+    };
+
+    let t = parsed.format.tags;
+    FfprobeInfo {
+        duration: parsed.format.duration.and_then(|s| s.parse::<f64>().ok()),
+        title:    t.title.or(t.title_upper),
+        artist:   t.artist.or(t.artist_upper),
+        comment:  t.comment.or(t.comment_upper),
+    }
+}
+
+/// Returns the duration of a video file in seconds via ffprobe, or None on failure.
+fn ffprobe_duration(path: &Path) -> Option<f64> {
+    ffprobe_info(path).duration
 }
 
 fn expand_tilde(input: &str) -> Result<PathBuf> {
@@ -302,7 +374,13 @@ fn fetch_candidates(client: &Client, config: &AppConfig, video_only: bool) -> Re
                         || is_image_url(&url) || is_video_url(&url)
                 };
                 if !valid { return None; }
-                Some(DownloadCandidate { post_id: p.id, url })
+                Some(DownloadCandidate {
+                    post_id: p.id,
+                    url,
+                    artists: p.tags.artist.clone(),
+                    description: p.description.clone(),
+                    md5: p.file.md5.clone(),
+                })
             })
             .collect();
 
@@ -327,6 +405,25 @@ fn fetch_candidates(client: &Client, config: &AppConfig, video_only: bool) -> Re
 }
 
 
+fn write_meta_sidecar(dir: &Path, candidate: &DownloadCandidate) {
+    let stem = if !candidate.md5.is_empty() {
+        candidate.md5.clone()
+    } else {
+        format!("post-{}", candidate.post_id)
+    };
+    let meta_path = dir.join(format!("{stem}.json"));
+    let meta = PostMeta {
+        post_id: candidate.post_id,
+        artists: candidate.artists.clone(),
+        description: candidate.description.chars().take(200).collect(),
+        post_url: format!("https://e621.net/posts/{}", candidate.post_id),
+        md5: candidate.md5.clone(),
+    };
+    if let Ok(json) = serde_json::to_string(&meta) {
+        let _ = fs::write(&meta_path, json);
+    }
+}
+
 fn download_file(client: &Client, candidate: &DownloadCandidate, dir: &Path) -> Result<PathBuf> {
     let filename = filename_from_url(&candidate.url)
         .unwrap_or_else(|| format!("post-{}.bin", candidate.post_id));
@@ -343,6 +440,9 @@ fn download_file(client: &Client, candidate: &DownloadCandidate, dir: &Path) -> 
         .with_context(|| format!("failed creating {}", path.display()))?
         .write_all(&bytes)
         .with_context(|| format!("failed writing {}", path.display()))?;
+
+    // Write sidecar metadata JSON alongside the media file
+    write_meta_sidecar(dir, candidate);
 
     Ok(path)
 }
@@ -362,23 +462,34 @@ fn detect_display_targets() -> Result<Vec<DisplayTarget>> {
     let parsed: KScreenConfig = serde_json::from_slice(&output.stdout)
         .context("failed to parse kscreen-doctor JSON")?;
 
-    let displays: Vec<DisplayTarget> = parsed.outputs
+    // Collect with position so we can sort to match Qt/Plasma's left-to-right screen ordering.
+    let mut displays: Vec<(i32, i32, DisplayTarget)> = parsed.outputs
         .into_iter()
         .filter(|o| o.enabled && o.connected)
         .filter_map(|o| {
             let mode_id = o.current_mode_id.as_ref()?;
             let mode = o.modes.as_ref()?.iter().find(|m| &m.id == mode_id)?;
-            Some(DisplayTarget {
+            let pos = o.pos.unwrap_or_default();
+            Some((pos.x, pos.y, DisplayTarget {
                 name: o.name,
                 width: mode.size.width,
                 height: mode.size.height,
-            })
+            }))
         })
         .collect();
 
     if displays.is_empty() {
         return Err(anyhow!("no active displays detected"));
     }
+
+    // Sort left-to-right, top-to-bottom — matches Qt.application.screens and
+    // Plasma's wallpaper.containment.screen indices.
+    displays.sort_by_key(|(x, y, _)| (*x, *y));
+
+    let displays: Vec<DisplayTarget> = displays.into_iter()
+        .map(|(x, _, d)| { log_info(&format!("screen: {} at x={}", d.name, x)); d })
+        .collect();
+
     Ok(displays)
 }
 
@@ -391,27 +502,57 @@ fn detect_display_targets() -> Result<Vec<DisplayTarget>> {
 
 // Main loop
 
-/// Tell the QML plugin which file to display by setting the wallpaper configuration
-/// key "MediaPath" via qdbus. The QML reads wallpaper.configuration.MediaPath live.
+/// Escape a string for embedding as a JS double-quoted string literal.
+fn js_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ").replace('\r', "")
+}
+
+/// Tell the QML plugin which file to display by writing MediaPath + post metadata
+/// directly into the screen's KConfig group via qdbus. The QML overlay picks up
+/// PostArtist/PostId/PostUrl via onValueChanged — no file reading required.
 fn write_current_file(cache_dir: &Path, screen_index: usize, screen_name: &str, media_path: &Path) {
-    // Also write the txt file as a fallback/debug aid
     let state_path = cache_dir.join(format!("current-screen{screen_index}.txt"));
     let _ = fs::write(&state_path, media_path.to_string_lossy().as_bytes());
 
-    let path_str = media_path.to_string_lossy();
-    log_info(&format!("screen{screen_index} ({screen_name}) -> {path_str}"));
+    // Load the per-file sidecar for post metadata; fall back to ffprobe tags
+    let stem = media_path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    let sidecar_src = cache_dir.join(format!("{stem}.json"));
+    let meta: Option<PostMeta> = fs::read_to_string(&sidecar_src)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
 
-    // Set MediaPath via qdbus on the correct desktop containment.
+    let (post_artist, post_id, post_url) = if let Some(ref m) = meta {
+        (m.artists.join(", "), m.post_id, m.post_url.clone())
+    } else {
+        // No sidecar — try ffprobe embedded tags as a fallback
+        let ff = ffprobe_info(media_path);
+        let artist = ff.artist.unwrap_or_default();
+        let title  = ff.title.unwrap_or_default();
+        if !artist.is_empty() || !title.is_empty() {
+            log_info(&format!("screen{screen_index}: using ffprobe tags: artist={artist:?} title={title:?}"));
+        }
+        (artist, 0u64, String::new())
+    };
+
+    let path_str = media_path.to_string_lossy();
+    log_info(&format!("screen{screen_index} ({screen_name}) -> {path_str}  artist={post_artist}  post={post_id}"));
+
+    // Set MediaPath + post metadata via qdbus on the correct desktop containment.
     // desktops() in Plasma KJS is indexed the same way as screen index.
-    // writeConfig pushes live into wallpaper.configuration.MediaPath.
+    // writeConfig pushes live into wallpaper.configuration — QML onValueChanged fires.
     // No reloadConfig — that destroys/recreates QML and races the write.
     let script = format!(
         r#"var d = desktops()[{screen_index}];
 if (d) {{
     d.currentConfigGroup = ["Wallpaper", "e621-wallpaper", "General"];
-    d.writeConfig("MediaPath", "{}");
+    d.writeConfig("MediaPath",  "{}");
+    d.writeConfig("PostArtist", "{}");
+    d.writeConfig("PostId",     {post_id});
+    d.writeConfig("PostUrl",    "{}");
 }}"#,
-        path_str
+        js_str(&path_str), js_str(&post_artist), js_str(&post_url)
     );
 
     // Retry a few times — plasmashell may not be fully ready on startup
@@ -493,9 +634,15 @@ fn read_all_plasma_config() -> std::collections::HashMap<String, String> {
         if let Some((k, v)) = line.split_once('=') {
             let key = k.trim().to_string();
             let val = v.trim().to_string();
-            // ForceNextAt: keep the most recent non-empty value
             if key == "ForceNextAt" {
+                // Keep the most recent non-empty value (last wins)
                 if !val.is_empty() {
+                    map.insert(key, val);
+                }
+            } else if key == "AudioScreen" {
+                // Any screen with a non-(-1) value takes priority over the default -1
+                let is_active = val.parse::<i64>().map(|v| v >= 0).unwrap_or(false);
+                if is_active || !map.contains_key(&key) {
                     map.insert(key, val);
                 }
             } else {
@@ -528,6 +675,25 @@ if (d) {{
         .args(["org.kde.plasmashell", "/PlasmaShell",
                "org.kde.PlasmaShell.evaluateScript", &script])
         .output();
+}
+
+/// Propagate the AudioScreen setting to every screen so all QML instances
+/// react via onValueChanged and enable/disable audio accordingly.
+fn push_audio_screen_all(targets: &[DisplayTarget], audio_screen: i64) {
+    log_info(&format!("audio screen → {audio_screen}"));
+    for (i, _) in targets.iter().enumerate() {
+        let script = format!(
+            r#"var d = desktops()[{i}];
+if (d) {{
+    d.currentConfigGroup = ["Wallpaper", "e621-wallpaper", "General"];
+    d.writeConfig("AudioScreen", {audio_screen});
+}}"#
+        );
+        let _ = Command::new("qdbus6")
+            .args(["org.kde.plasmashell", "/PlasmaShell",
+                   "org.kde.PlasmaShell.evaluateScript", &script])
+            .output();
+    }
 }
 
 fn flush_cache(cache_dir: &Path) {
@@ -752,6 +918,12 @@ fn main() -> Result<()> {
                 // Clear fetch cursor so next download uses new tags
                 fetch_cursor.clear();
             }
+
+            // Propagate AudioScreen to all screens when it changes
+            if new_config.audio_screen != config.audio_screen {
+                push_audio_screen_all(&targets, new_config.audio_screen);
+            }
+
             config = new_config;
         }
 

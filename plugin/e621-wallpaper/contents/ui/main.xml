@@ -3,6 +3,7 @@
   <kcfgfile name=""/>
   <group name="General">
     <entry name="MediaPath"       type="String">  <default></default>       </entry>
+    <entry name="MetaPath"        type="String">  <default></default>       </entry>
     <entry name="Tags"            type="String">  <default>rating:e gay male -female</default> </entry>
     <entry name="ImageDuration"   type="Int">     <default>300</default>    </entry>
     <entry name="DownloadBatch"   type="Int">     <default>8</default>      </entry>
@@ -12,5 +13,8 @@
     <entry name="BlurMultiplier"  type="Double">  <default>2.0</default>    </entry>
     <entry name="BackgroundDim"   type="Double">  <default>0.3</default>    </entry>
     <entry name="ForceNextAt"      type="String">  <default></default>       </entry>
+    <entry name="ShowPostInfo"     type="Bool">    <default>true</default>   </entry>
+    <entry name="FgBlurRadius"     type="Double">  <default>0</default>      </entry>
+    <entry name="RgbOffset"        type="Double">  <default>0</default>      </entry>
   </group>
 </kcfg>

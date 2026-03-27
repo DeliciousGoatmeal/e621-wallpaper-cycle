@@ -13,6 +13,11 @@
     <entry name="BackgroundDim"   type="Double">  <default>0.3</default>    </entry>
     <entry name="FgBlurRadius"    type="Int">     <default>0</default>      </entry>
     <entry name="RgbOffset"       type="Int">     <default>0</default>      </entry>
-    <entry name="ForceNextAt"      type="String">  <default></default>       </entry>
+    <entry name="ForceNextAt"     type="String">  <default></default>       </entry>
+    <entry name="AudioScreen"     type="Int">     <default>-1</default>     </entry>
+    <entry name="ShowPostInfo"    type="Bool">    <default>true</default>   </entry>
+    <entry name="PostArtist"      type="String">  <default></default>       </entry>
+    <entry name="PostId"          type="Int">     <default>0</default>      </entry>
+    <entry name="PostUrl"         type="String">  <default></default>       </entry>
   </group>
 </kcfg>

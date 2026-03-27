@@ -16,8 +16,46 @@ WallpaperItem {
 
     property bool   isVideo:     false
     property bool   mediaLoaded: false
-    property bool   showDebug:   !mediaLoaded
+    property bool   showDebug:   !mediaLoaded || (showPostInfo && mediaLoaded && _postInfoTimer.running)
     property string debugLog:    ""
+
+    // Post metadata — written into KConfig by the Rust daemon via qdbus on each rotation.
+    // The daemon writes PostArtist/PostId/PostUrl for each screen's config group so
+    // onValueChanged picks them up with no file-reading required.
+    property bool   showPostInfo: wallpaper.configuration.ShowPostInfo !== false
+    property string metaArtist:  wallpaper.configuration.PostArtist || ""
+    property int    metaPostId:  wallpaper.configuration.PostId     || 0
+    property string metaPostUrl: wallpaper.configuration.PostUrl    || ""
+    property string metaDesc:    ""
+
+    function fetchDesc() {
+        if (metaPostId <= 0) return
+        var req = new XMLHttpRequest()
+        req.onreadystatechange = function() {
+            if (req.readyState !== XMLHttpRequest.DONE) return
+            if (req.status === 200) {
+                try {
+                    var p = JSON.parse(req.responseText).post
+                    if (p && p.description)
+                        root.metaDesc = p.description.trim().replace(/\r?\n+/g, " ").substring(0, 300)
+                } catch(e) {}
+            }
+        }
+        req.open("GET", "https://e621.net/posts/" + metaPostId + ".json")
+        req.setRequestHeader("User-Agent", "e621-plasma-wallpaper/0.3 (by zombiedoggie on e621)")
+        req.send()
+    }
+
+    // Audio: AudioScreen holds the screen index that should play audio (-1 = none).
+    // Rust propagates changes to all screens so every instance re-evaluates.
+    property int  audioScreen:   wallpaper.configuration.AudioScreen  // default -1 from main.xml
+    property bool isAudioEnabled: audioScreen >= 0 && audioScreen === screenIdx
+
+    AudioOutput {
+        id: fgAudioOut
+        volume: 1.0
+        device: MediaDevices.defaultAudioOutput   // honour system default (HDMI, etc.)
+    }
 
     function dbg(msg) {
         debugLog = "[" + new Date().toLocaleTimeString() + "] " + msg + "\n" + debugLog
@@ -40,6 +78,15 @@ WallpaperItem {
             else if (key === "FgBlurRadius")   root.fgBlurRadius   = value || 0.0
             else if (key === "RgbOffset")      root.rgbOffset      = value || 0.0
             else if (key === "MediaPath")      root.mediaPath      = value || ""
+            else if (key === "ShowPostInfo") root.showPostInfo = (value !== false && value !== "false")
+            else if (key === "PostArtist")  root.metaArtist  = value || ""
+            else if (key === "PostId")      {
+                root.metaPostId = parseInt(value, 10) || 0
+                root.metaDesc   = ""
+                if (root.metaPostId > 0) Qt.callLater(root.fetchDesc)
+            }
+            else if (key === "PostUrl")     root.metaPostUrl = value || ""
+            else if (key === "AudioScreen") root.audioScreen = parseInt(value, 10)
         }
     }
 
@@ -79,6 +126,16 @@ WallpaperItem {
     NumberAnimation {
         id: fadeIn
         target: fgFadeLayer; property: "opacity"; to: 1.0; duration: 600; easing.type: Easing.OutQuad
+    }
+
+    // Keep overlay visible for postInfoDuration seconds after each new wallpaper
+    property int postInfoDuration: 6
+    Timer {
+        id: _postInfoTimer
+        interval: root.postInfoDuration * 1000
+        running: false
+        repeat: false
+        onTriggered: { /* showDebug binding re-evaluates automatically */ }
     }
 
     readonly property int screenIdx: {
@@ -170,13 +227,14 @@ WallpaperItem {
                     MediaPlayer {
                         id: fgPlayer
                         loops: MediaPlayer.Infinite
-                        audioOutput: null
-                        onActiveTracksChanged: { activeAudioTracks = [] }
+                        audioOutput: root.isAudioEnabled ? fgAudioOut : null
+                        onActiveTracksChanged: { if (!root.isAudioEnabled) activeAudioTracks = [] }
                         videoOutput: fgVideo
                         onPlaybackStateChanged: {
                             if (playbackState === MediaPlayer.PlayingState) {
                                 root.mediaLoaded = true
                                 root.dbg("Video playing")
+                                if (root.showPostInfo) _postInfoTimer.restart()
                             }
                         }
                         onErrorOccurred: function(err, msg) { root.dbg("fgPlayer: " + msg) }
@@ -196,6 +254,7 @@ WallpaperItem {
                         if (status === Image.Ready) {
                             root.mediaLoaded = true
                             root.dbg("Image ready")
+                            if (root.showPostInfo) _postInfoTimer.restart()
                         } else if (status === Image.Error) {
                             root.dbg("Image error: " + source)
                         }
@@ -222,42 +281,86 @@ WallpaperItem {
             z: -1
         }
 
-        // ── Debug overlay ────────────────────────────────────────────────────
+    } // end sceneRoot
 
-        Rectangle {
-            anchors.left: parent.left
-            anchors.top: parent.top
-            anchors.margins: 24
-            width: 600
-            height: col.implicitHeight + 24
-            color: "#dd000000"
-            radius: 8
-            opacity: root.showDebug ? 1.0 : 0.0
-            visible: opacity > 0
-            z: 100
-            Behavior on opacity { NumberAnimation { duration: 1000 } }
+    // ── Info overlay — outside sceneRoot so the chromatic aberration shader ────
+    // ── does not apply to it.                                                ────
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.margins: 24
+        width: 600
+        height: col.implicitHeight + 24
+        color: "#dd000000"
+        radius: 8
+        opacity: root.showDebug ? 1.0 : 0.0
+        visible: opacity > 0
+        z: 100
+        Behavior on opacity { NumberAnimation { duration: 1000 } }
+        Column {
+            id: col
+            anchors { fill: parent; margins: 12 }
+            spacing: 6
+
+            // ── Now playing: shown only once media is loaded ───────────────
             Column {
-                id: col
-                anchors { fill: parent; margins: 12 }
-                spacing: 6
-                Text { text: "e621 Wallpaper"; color: "#fff"; font.bold: true; font.pixelSize: 15 }
-                Text { text: "Screen: " + root.screenIdx; color: "#aaa"; font.pixelSize: 12 }
+                visible: root.mediaLoaded
+                spacing: 4
+                width: parent.width
+
                 Text {
-                    text: "MediaPath: " + (root.mediaPath || "(none — run the Rust binary)")
-                    color: root.mediaPath ? "#88ff88" : "#ffcc44"
-                    font.pixelSize: 11
+                    text: root.metaArtist !== "" ? root.metaArtist : "unknown artist"
+                    color: "#aaddff"
+                    font.pixelSize: 15
+                    font.bold: true
                     wrapMode: Text.Wrap
                     width: parent.width
                 }
-                Rectangle { width: parent.width; height: 1; color: "#333" }
                 Text {
-                    text: root.debugLog; color: "#ccc"; font.pixelSize: 11
-                    font.family: "monospace"; wrapMode: Text.Wrap; width: parent.width
+                    visible: root.metaPostUrl !== ""
+                    text: root.metaPostUrl
+                    color: "#6688bb"
+                    font.pixelSize: 11
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideRight
+                    width: parent.width
+                }
+                Text {
+                    visible: root.metaDesc !== ""
+                    text: root.metaDesc
+                    color: "#aaaaaa"
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                    elide: Text.ElideRight
+                    maximumLineCount: 3
+                    width: parent.width
                 }
             }
-        }
 
-    } // end sceneRoot
+            // ── Pre-load state: title + debug log ─────────────────────────
+            Text {
+                visible: !root.mediaLoaded
+                text: "e621 Wallpaper  ·  Screen " + root.screenIdx
+                color: "#ffffff"; font.bold: true; font.pixelSize: 14
+            }
+            Text {
+                visible: !root.mediaLoaded && root.mediaPath === ""
+                text: "waiting for Rust daemon..."
+                color: "#ffcc44"; font.pixelSize: 11
+            }
+            Rectangle {
+                visible: !root.mediaLoaded
+                width: parent.width; height: 1; color: "#444"
+            }
+            Text {
+                visible: !root.mediaLoaded
+                text: root.debugLog
+                color: "#888"; font.pixelSize: 10
+                font.family: "monospace"; wrapMode: Text.Wrap; width: parent.width
+            }
+        }
+    }
 
     // ── Chromatic aberration applied via layer.effect ─────────────────────────
     // source is automatically bound to sceneRoot's layer texture.
