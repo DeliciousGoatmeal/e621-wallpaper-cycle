@@ -46,15 +46,35 @@ WallpaperItem {
         req.send()
     }
 
-    // Audio: AudioScreen holds the screen index that should play audio (-1 = none).
+    // Audio: AudioScreen holds the connector name of the screen that plays audio ("" = none).
     // Rust propagates changes to all screens so every instance re-evaluates.
-    property int  audioScreen:   wallpaper.configuration.AudioScreen  // default -1 from main.xml
-    property bool isAudioEnabled: audioScreen >= 0 && audioScreen === screenIdx
+    property string audioScreen: wallpaper.configuration.AudioScreen || ""
+
+    // Resolve this containment's screen name by matching the containment's physical
+    // screen geometry against Qt.application.screens virtual positions.
+    // This avoids relying on index ordering (Plasma vs Qt screen indices can differ).
+    readonly property string screenName: {
+        try {
+            var geo = wallpaper.containment.screenGeometry
+            if (geo && geo.width > 0) {
+                for (var i = 0; i < Qt.application.screens.length; i++) {
+                    var s = Qt.application.screens[i]
+                    if (s.virtualX === geo.x && s.virtualY === geo.y)
+                        return s.name
+                }
+            }
+        } catch(e) {}
+        // Fallback to index-based
+        var idx = screenIdx
+        return (idx >= 0 && idx < Qt.application.screens.length)
+            ? Qt.application.screens[idx].name : ""
+    }
+
+    property bool isAudioEnabled: audioScreen !== "" && audioScreen === screenName
 
     AudioOutput {
         id: fgAudioOut
-        volume: 1.0
-        muted: !root.isAudioEnabled
+        volume: root.isAudioEnabled ? 1.0 : 0.0
         device: MediaDevices.defaultAudioOutput   // honour system default (HDMI, etc.)
     }
 
@@ -87,7 +107,7 @@ WallpaperItem {
                 if (root.metaPostId > 0) Qt.callLater(root.fetchDesc)
             }
             else if (key === "PostUrl")     root.metaPostUrl = value || ""
-            else if (key === "AudioScreen") root.audioScreen = parseInt(value, 10)
+            else if (key === "AudioScreen") root.audioScreen = value || ""
         }
     }
 
@@ -310,6 +330,12 @@ WallpaperItem {
                 width: parent.width
 
                 Text {
+                    text: root.screenName + (root.isAudioEnabled ? "  🔊" : "")
+                    color: "#666688"; font.pixelSize: 10; font.family: "monospace"
+                    width: parent.width
+                }
+
+                Text {
                     text: root.metaArtist !== "" ? root.metaArtist : "unknown artist"
                     color: "#aaddff"
                     font.pixelSize: 15
@@ -341,7 +367,7 @@ WallpaperItem {
             // ── Pre-load state: title + debug log ─────────────────────────
             Text {
                 visible: !root.mediaLoaded
-                text: "e621 Wallpaper  ·  Screen " + root.screenIdx
+                text: "e621 Wallpaper  ·  " + root.screenName + " (idx " + root.screenIdx + ")"
                 color: "#ffffff"; font.bold: true; font.pixelSize: 14
             }
             Text {

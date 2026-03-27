@@ -34,7 +34,7 @@ struct AppConfig {
     blur_multiplier: f32,
     background_dim: f32,
     force_next_at: String,
-    audio_screen: i64,   // -1 = none, 0..N = screen index that plays audio
+    audio_screen: String,  // "" = none, connector name = that screen plays audio
 }
 
 impl AppConfig {
@@ -58,7 +58,7 @@ impl AppConfig {
             blur_multiplier: r("BlurMultiplier", "2.0").parse().unwrap_or(2.0),
             background_dim:  r("BackgroundDim",  "0.3").parse().unwrap_or(0.3),
             force_next_at:   r("ForceNextAt",    ""),
-            audio_screen:    r("AudioScreen",    "-1").parse().unwrap_or(-1),
+            audio_screen:    r("AudioScreen",    ""),
         }
     }
 }
@@ -640,9 +640,8 @@ fn read_all_plasma_config() -> std::collections::HashMap<String, String> {
                     map.insert(key, val);
                 }
             } else if key == "AudioScreen" {
-                // Any screen with a non-(-1) value takes priority over the default -1
-                let is_active = val.parse::<i64>().map(|v| v >= 0).unwrap_or(false);
-                if is_active || !map.contains_key(&key) {
+                // Any screen with a non-empty value takes priority over the default ""
+                if !val.is_empty() || !map.contains_key(&key) {
                     map.insert(key, val);
                 }
             } else {
@@ -703,14 +702,15 @@ if (d) {{
 
 /// Propagate the AudioScreen setting to every screen so all QML instances
 /// react via onValueChanged and enable/disable audio accordingly.
-fn push_audio_screen_all(targets: &[DisplayTarget], audio_screen: i64) {
-    log_info(&format!("audio screen → {audio_screen}"));
+fn push_audio_screen_all(targets: &[DisplayTarget], audio_screen: &str) {
+    log_info(&format!("audio screen → \"{audio_screen}\""));
+    let escaped = js_str(audio_screen);
     for (i, _) in targets.iter().enumerate() {
         let script = format!(
             r#"var d = desktops()[{i}];
 if (d) {{
     d.currentConfigGroup = ["Wallpaper", "e621-wallpaper", "General"];
-    d.writeConfig("AudioScreen", {audio_screen});
+    d.writeConfig("AudioScreen", "{escaped}");
 }}"#
         );
         let _ = Command::new("qdbus6")
@@ -949,7 +949,7 @@ fn main() -> Result<()> {
 
             // Propagate AudioScreen to all screens when it changes
             if new_config.audio_screen != config.audio_screen {
-                push_audio_screen_all(&targets, new_config.audio_screen);
+                push_audio_screen_all(&targets, &new_config.audio_screen);
             }
 
             config = new_config;

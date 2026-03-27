@@ -26,7 +26,7 @@ ColumnLayout {
     property int    cfg_FgBlurRadius
     property int    cfg_RgbOffset
     property bool   cfg_ShowPostInfo
-    property int    cfg_AudioScreen       // -1 = none, 0..N = that screen index plays audio
+    property string cfg_AudioScreen       // "" = none, screen connector name = that screen plays
     property string cfg_ForceNextAt
     // Read-only: written by daemon, displayed here only (not user-editable)
     property string cfg_PostArtist
@@ -61,6 +61,18 @@ ColumnLayout {
     Component.onCompleted: Qt.callLater(fetchNowPlaying)
     onCfg_PostIdChanged: Qt.callLater(fetchNowPlaying)
 
+    // Pick up live updates written by the Rust daemon via qdbus while the
+    // dialog is open — cfg_* properties are set once on load and don't
+    // auto-update from external KConfig writes.
+    Connections {
+        target: wallpaperConfiguration
+        function onValueChanged(key, value) {
+            if      (key === "PostId")     { cfg_PostId     = parseInt(value, 10) || 0 }
+            else if (key === "PostArtist") { cfg_PostArtist = value || "" }
+            else if (key === "PostUrl")    { cfg_PostUrl    = value || "" }
+        }
+    }
+
     // Write a config key immediately.
     // wallpaperConfiguration[key] = value goes through QQmlPropertyMap which
     // emits the valueChanged signal that main.qml listens to — this is what
@@ -85,6 +97,21 @@ ColumnLayout {
             anchors { fill: parent; margins: 12 }
             spacing: 5
 
+            QQC2.Label {
+                width: parent.width
+                text: {
+                    try {
+                        var idx = configDialog.wallpaper.containment.screen
+                        if (idx >= 0 && idx < Qt.application.screens.length)
+                            return Qt.application.screens[idx].name
+                    } catch(e) {}
+                    return ""
+                }
+                color: "#666688"
+                font.pixelSize: 10
+                font.family: "monospace"
+                visible: text !== ""
+            }
             QQC2.Label {
                 width: parent.width
                 text: cfg_PostArtist !== "" ? cfg_PostArtist : "unknown artist"
@@ -259,19 +286,32 @@ ColumnLayout {
         spacing: 12
         QQC2.Label { text: "Play audio from:" }
         QQC2.ComboBox {
-            // Build model dynamically: "None" + one entry per detected screen
-            // Qt.application.screens matches Plasma's screen index order.
+            // Build model: "None" + connector name for each detected screen.
+            // Store the screen name (not an index) so matching is unambiguous.
+            id: audioCombo
             model: {
                 var items = ["None"]
                 for (var i = 0; i < Qt.application.screens.length; i++)
                     items.push(Qt.application.screens[i].name)
                 return items
             }
-            currentIndex: Math.max(0, cfg_AudioScreen + 1)
+            currentIndex: {
+                if (cfg_AudioScreen === "") return 0
+                for (var i = 0; i < Qt.application.screens.length; i++) {
+                    if (Qt.application.screens[i].name === cfg_AudioScreen)
+                        return i + 1
+                }
+                return 0
+            }
             onActivated: {
-                var screen = currentIndex - 1   // None → -1, first screen → 0, …
-                cfg_AudioScreen = screen
-                writeNow("AudioScreen", screen)
+                var name = currentIndex === 0 ? "" : Qt.application.screens[currentIndex - 1].name
+                cfg_AudioScreen = name
+                // writeNow triggers onValueChanged in main.qml on this containment immediately.
+                // writeConfig writes to KConfig on disk so the Rust daemon picks it up and
+                // propagates the change to the OTHER monitor's containment as well.
+                writeNow("AudioScreen", name)
+                if (wallpaperConfiguration)
+                    wallpaperConfiguration.writeConfig("AudioScreen", name)
             }
         }
     }
