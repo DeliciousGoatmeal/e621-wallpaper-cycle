@@ -279,6 +279,7 @@ ColumnLayout {
         from: 0
         to: Math.max(1, Qt.application.screens.length)
         stepSize: 1
+        snapMode: QQC2.Slider.SnapAlways
         value: {
             if (cfg_AudioScreen === "") return 0
             for (var i = 0; i < Qt.application.screens.length; i++) {
