@@ -551,8 +551,9 @@ if (d) {{
     d.writeConfig("PostArtist", "{}");
     d.writeConfig("PostId",     {post_id});
     d.writeConfig("PostUrl",    "{}");
+    d.writeConfig("ScreenName", "{}");
 }}"#,
-        js_str(&path_str), js_str(&post_artist), js_str(&post_url)
+        js_str(&path_str), js_str(&post_artist), js_str(&post_url), js_str(screen_name)
     );
 
     // Retry a few times — plasmashell may not be fully ready on startup
@@ -640,7 +641,7 @@ fn read_all_plasma_config() -> std::collections::HashMap<String, String> {
                     map.insert(key, val);
                 }
             } else if key == "AudioScreen" {
-                // Any screen with a non-empty value takes priority over the default ""
+                // Non-empty wins for initial load; hot-reload uses read_audio_screen_changed.
                 if !val.is_empty() || !map.contains_key(&key) {
                     map.insert(key, val);
                 }
@@ -651,6 +652,33 @@ fn read_all_plasma_config() -> std::collections::HashMap<String, String> {
         }
     }
     map
+}
+
+/// Scan all containment config groups for AudioScreen and return the first value
+/// that differs from `current`. After push_audio_screen_all all containments hold
+/// the same value, so any containment that differs is the one the user just edited —
+/// including "" (None), which the merged-config reader misses.
+fn read_audio_screen_changed(current: &str) -> Option<String> {
+    let path = plasma_config_path();
+    let Ok(contents) = fs::read_to_string(&path) else { return None };
+    let target_suffix = "][Wallpaper][e621-wallpaper][General]";
+    let mut in_section = false;
+    for line in contents.lines() {
+        if line.starts_with('[') {
+            in_section = line.contains(target_suffix);
+            continue;
+        }
+        if !in_section { continue; }
+        if let Some((k, v)) = line.split_once('=') {
+            if k.trim() == "AudioScreen" {
+                let val = v.trim();
+                if val != current {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Get the last-modified time of the Plasma config file.
@@ -947,9 +975,12 @@ fn main() -> Result<()> {
                 fetch_cursor.clear();
             }
 
-            // Propagate AudioScreen to all screens when it changes
-            if new_config.audio_screen != config.audio_screen {
-                push_audio_screen_all(&targets, &new_config.audio_screen);
+            // Propagate AudioScreen to all screens when it changes.
+            // Use read_audio_screen_changed so selecting "None" (empty string)
+            // is detected even when the other containment still has the old name.
+            if let Some(new_audio) = read_audio_screen_changed(&config.audio_screen) {
+                push_audio_screen_all(&targets, &new_audio);
+                config.audio_screen = new_audio;
             }
 
             config = new_config;

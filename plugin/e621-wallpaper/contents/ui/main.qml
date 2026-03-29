@@ -50,25 +50,10 @@ WallpaperItem {
     // Rust propagates changes to all screens so every instance re-evaluates.
     property string audioScreen: wallpaper.configuration.AudioScreen || ""
 
-    // Resolve this containment's screen name by matching the containment's physical
-    // screen geometry against Qt.application.screens virtual positions.
-    // This avoids relying on index ordering (Plasma vs Qt screen indices can differ).
-    readonly property string screenName: {
-        try {
-            var geo = wallpaper.containment.screenGeometry
-            if (geo && geo.width > 0) {
-                for (var i = 0; i < Qt.application.screens.length; i++) {
-                    var s = Qt.application.screens[i]
-                    if (s.virtualX === geo.x && s.virtualY === geo.y)
-                        return s.name
-                }
-            }
-        } catch(e) {}
-        // Fallback to index-based
-        var idx = screenIdx
-        return (idx >= 0 && idx < Qt.application.screens.length)
-            ? Qt.application.screens[idx].name : ""
-    }
+    // Screen name written by the Rust daemon via writeConfig("ScreenName", ...).
+    // Daemon sorts screens by x-position and writes the connector name to each
+    // containment directly — no index guessing needed.
+    property string screenName: wallpaper.configuration.ScreenName || ""
 
     property bool isAudioEnabled: audioScreen !== "" && audioScreen === screenName
 
@@ -107,6 +92,7 @@ WallpaperItem {
             }
             else if (key === "PostUrl")     root.metaPostUrl = value || ""
             else if (key === "AudioScreen") root.audioScreen = value || ""
+            else if (key === "ScreenName")  root.screenName  = value || ""
         }
     }
 
